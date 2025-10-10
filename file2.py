@@ -28,6 +28,8 @@ class P2PNode:
         self.pending_queue = queue.Queue()
         # For the Client: the connection to the host
         self.connection = None
+        # For the Client: Tracks the root directory for an incoming folder download
+        self.download_root = None
 
     # --- HOST FUNCTIONALITY ---
 
@@ -70,15 +72,15 @@ class P2PNode:
                 if not data:
                     break # Connection closed by client
                 
-                # Check if this is a file header
+                # Check for file header first, as it has a data payload to relay
                 if data.startswith(b'FILE_HEADER::'):
                     header_parts = data.decode('utf-8').split('::')
-                    _, filename, filesize_str = header_parts
+                    _, relative_path, filesize_str = header_parts
                     filesize = int(filesize_str)
 
                     # Relay the header with the sender's username
-                    relay_header = f"FILE_HEADER::{username}::{filename}::{filesize}".encode('utf-8')
-                    print(f"\r[*] Relaying file '{filename}' from {username}.\nHost> ", end="")
+                    relay_header = f"FILE_HEADER::{username}::{relative_path}::{filesize}".encode('utf-8')
+                    print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
                     self._broadcast(relay_header, conn)
                     
                     # Now, relay the file data
@@ -89,8 +91,21 @@ class P2PNode:
                             break
                         self._broadcast(chunk, conn)
                         bytes_to_relay -= len(chunk)
-                    print(f"\r[*] Finished relaying '{filename}' from {username}.\nHost> ", end="")
+                    print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
 
+                elif data.startswith(b'FOLDER_HEADER::') or data.startswith(b'FOLDER_END::'):
+                    # These are simple single-line messages to be relayed
+                    decoded_data = data.decode('utf-8').split('::')
+                    msg_type, name = decoded_data
+                    relay_msg = f"{msg_type}::{username}::{name}".encode('utf-8')
+                    
+                    if msg_type == 'FOLDER_HEADER':
+                        print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
+                    else:
+                        print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
+
+                    self._broadcast(relay_msg, conn)
+                
                 else: # It's a chat message
                     message_to_broadcast = f"[{username}] says: ".encode('utf-8') + data
                     # Use carriage return to cleanly print message above the host's input prompt
@@ -188,19 +203,38 @@ class P2PNode:
                     print("\n[!] Connection to host lost.")
                     break
                 
-                # Check for file header
-                if data.startswith(b'FILE_HEADER::'):
+                # Check for folder/file headers first
+                if data.startswith(b'FOLDER_HEADER::'):
                     header_parts = data.decode('utf-8').split('::')
-                    _, sender_username, filename, filesize_str = header_parts
+                    _, sender_username, folder_name = header_parts
+                    print(f"\r[*] Receiving folder '{folder_name}' from {sender_username}.\nYou> ", end="")
+                    self.download_root = os.path.join(DOWNLOADS_DIR, os.path.basename(folder_name))
+                    os.makedirs(self.download_root, exist_ok=True)
+                
+                elif data.startswith(b'FOLDER_END::'):
+                    header_parts = data.decode('utf-8').split('::')
+                    _, sender_username, folder_name = header_parts
+                    print(f"\r[*] Successfully downloaded folder '{folder_name}' from {sender_username}.\nYou> ", end="")
+                    self.download_root = None # Reset after folder transfer is complete
+
+                elif data.startswith(b'FILE_HEADER::'):
+                    header_parts = data.decode('utf-8').split('::')
+                    _, sender_username, relative_path, filesize_str = header_parts
                     filesize = int(filesize_str)
 
-                    print(f"\r[*] Receiving file '{filename}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
+                    print(f"\r[*] Receiving file '{relative_path}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
                     
-                    # Create downloads directory if it doesn't exist
-                    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-                    filepath = os.path.join(DOWNLOADS_DIR, os.path.basename(filename))
+                    # Determine where to save the file
+                    if self.download_root:
+                        save_path = os.path.join(self.download_root, relative_path)
+                    else:
+                        os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+                        save_path = os.path.join(DOWNLOADS_DIR, os.path.basename(relative_path))
+                    
+                    # Ensure the subdirectory for the file exists
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-                    with open(filepath, 'wb') as f:
+                    with open(save_path, 'wb') as f:
                         bytes_received = 0
                         while bytes_received < filesize:
                             chunk = self.connection.recv(min(BUFFER_SIZE, filesize - bytes_received))
@@ -209,7 +243,7 @@ class P2PNode:
                             f.write(chunk)
                             bytes_received += len(chunk)
                     
-                    print(f"\r[*] Successfully downloaded '{filename}'.\nYou> ", end="")
+                    print(f"\r[*] Successfully downloaded '{relative_path}'.\nYou> ", end="")
 
                 else: # It's a chat message
                     print(f"\r{data.decode('utf-8')}\nYou> ", end="")
@@ -228,28 +262,55 @@ class P2PNode:
         """Handles sending messages and files from user input to the host."""
         print("--- Connected to Host ---")
         print("Type 'exit' to disconnect.")
-        print("To send a file, type 'send <filepath>'")
+        print("To send a file or folder, type 'send <path>'")
         while True:
             message = input("You> ")
             if message.lower() == 'exit':
                 break
 
             if message.lower().startswith('send '):
-                filepath = message[5:].strip()
-                if os.path.exists(filepath):
-                    filesize = os.path.getsize(filepath)
-                    filename = os.path.basename(filepath)
+                path_to_send = message[5:].strip().strip("'\"")
+
+                if os.path.isdir(path_to_send):
+                    # --- FOLDER SENDING LOGIC ---
+                    folder_name = os.path.basename(os.path.normpath(path_to_send))
+                    print(f"[*] Starting to send folder '{folder_name}'...")
+                    self.connection.sendall(f"FOLDER_HEADER::{folder_name}".encode('utf-8'))
+                    time.sleep(0.1)
+
+                    for root, _, files in os.walk(path_to_send):
+                        for filename in files:
+                            full_path = os.path.join(root, filename)
+                            relative_path = os.path.relpath(full_path, path_to_send)
+                            filesize = os.path.getsize(full_path)
+                            
+                            print(f"  Sending: {relative_path}")
+                            self.connection.sendall(f"FILE_HEADER::{relative_path}::{filesize}".encode('utf-8'))
+                            time.sleep(0.1)
+
+                            with open(full_path, 'rb') as f:
+                                while (chunk := f.read(BUFFER_SIZE)):
+                                    self.connection.sendall(chunk)
+                            time.sleep(0.1)
+
+                    self.connection.sendall(f"FOLDER_END::{folder_name}".encode('utf-8'))
+                    print(f"[*] Finished sending folder '{folder_name}'.")
+
+                elif os.path.isfile(path_to_send):
+                    # --- SINGLE FILE SENDING LOGIC ---
+                    filesize = os.path.getsize(path_to_send)
+                    filename = os.path.basename(path_to_send)
                     header = f"FILE_HEADER::{filename}::{filesize}".encode('utf-8')
                     
                     self.connection.sendall(header)
-                    time.sleep(0.1) # Give a moment for the header to be processed separately
+                    time.sleep(0.1)
 
-                    with open(filepath, 'rb') as f:
+                    with open(path_to_send, 'rb') as f:
                         while (chunk := f.read(BUFFER_SIZE)):
                             self.connection.sendall(chunk)
                     print(f"[*] Finished sending '{filename}'.")
                 else:
-                    print(f"[!] File not found: {filepath}")
+                    print(f"[!] Path not found: {path_to_send}")
             else:
                 self.connection.sendall(message.encode('utf-8'))
         
