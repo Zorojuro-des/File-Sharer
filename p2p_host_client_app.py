@@ -7,6 +7,7 @@ import argparse
 import sys
 import os
 import queue
+import time
 
 # --- Constants ---
 HOST = '0.0.0.0'  # Listen on all available interfaces
@@ -92,21 +93,20 @@ class P2PNode:
                         buffer = buffer[filesize:]
 
                         relay_header = f"FILE_HEADER::{username}::{relative_path}::{filesize}\n".encode('utf-8')
-                        # print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
+                        print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
                         self._broadcast(relay_header, conn)
                         self._broadcast(file_data, conn)
-                        # print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
+                        print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
                         continue
 
                     elif decoded_line.startswith('FOLDER_HEADER::') or decoded_line.startswith('FOLDER_END::'):
                         msg_type, name = decoded_line.split('::')
                         relay_msg = f"{msg_type}::{username}::{name}\n".encode('utf-8')
                         
-                        # if msg_type == 'FOLDER_HEADER':
-                        #     print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
-
-                        # else:
-                        #     print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
+                        if msg_type == 'FOLDER_HEADER':
+                            print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
+                        else:
+                            print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
                         self._broadcast(relay_msg, conn)
                         continue
 
@@ -143,9 +143,9 @@ class P2PNode:
     def _host_ui_handler(self):
         """
         Handles the host's main UI loop, processing pending connections
-        and sending messages.
+        and sending messages/files.
         """
-        print("--- Host is running. Type messages to broadcast. Type 'exit' to shut down. ---")
+        print("--- Host is running. Type messages or 'send <path>'. Type 'exit' to shut down. ---")
         print(f"Your IP Address: {socket.gethostbyname(socket.gethostname())}")
         while True:
             # Handle pending connection requests first
@@ -181,7 +181,10 @@ class P2PNode:
             if message.lower() == 'exit':
                 break
             
-            if message:
+            if message.lower().startswith('send '):
+                path_to_send = message[5:].strip().strip("'\"")
+                self._send_file_or_folder(path_to_send, sender_name="HOST")
+            elif message:
                 formatted_message = f"[HOST] says: {message}\n".encode('utf-8')
                 self._broadcast(formatted_message, None)
 
@@ -304,9 +307,111 @@ class P2PNode:
         
         self.connection.close()
         os._exit(0)
+    
+    def _send_file_or_folder(self, path_to_send, sender_name="You"):
+        """Shared logic for both Host and Client to send a file or folder."""
+        if sender_name == "You" and not self.connection:
+            print("[!] Client is not connected.")
+            return
+        if sender_name == "HOST" and not self.clients:
+            print("[!] No clients connected to send files to.")
+            return
+
+        if os.path.isdir(path_to_send):
+            folder_name = os.path.basename(os.path.normpath(path_to_send))
+
+            # --- Calculate total size and file count for progress bar ---
+            print("[*] Calculating folder size...")
+            total_files = 0
+            total_size = 0
+            for root, _, files in os.walk(path_to_send):
+                for filename in files:
+                    try:
+                        total_files += 1
+                        total_size += os.path.getsize(os.path.join(root, filename))
+                    except OSError:
+                        continue # Skip files we can't access
+            print(f"[*] Total files: {total_files}, Total size: {total_size / (1024*1024):.2f} MB")
+
+            # --- Start sending ---
+            print(f"[*] Starting to send folder '{folder_name}'...")
+            header = f"FOLDER_HEADER::{folder_name}\n".encode('utf-8')
+            if sender_name == "You": self.connection.sendall(header)
+            else: self._broadcast(f"FOLDER_HEADER::HOST::{folder_name}\n".encode('utf-8'), None)
+
+
+            sent_files = 0
+            sent_size = 0
+            self._print_progress_bar(0, total_size, prefix='Progress:', suffix='Complete', length=50)
+
+            for root, _, files in os.walk(path_to_send):
+                for filename in files:
+                    full_path = os.path.join(root, filename)
+                    relative_path = os.path.relpath(full_path, path_to_send)
+                    
+                    try:
+                        with open(full_path, 'rb') as f:
+                            file_content = f.read()
+                        
+                        filesize = len(file_content)
+                        file_header = f"FILE_HEADER::{relative_path}::{filesize}\n".encode('utf-8')
+                        
+                        if sender_name == "You":
+                            self.connection.sendall(file_header)
+                            self.connection.sendall(file_content)
+                        else: # Host is sending
+                            host_header = f"FILE_HEADER::HOST::{relative_path}::{filesize}\n".encode('utf-8')
+                            self._broadcast(host_header, None)
+                            self._broadcast(file_content, None)
+
+                        sent_files += 1
+                        sent_size += filesize
+                        self._print_progress_bar(sent_size, total_size, prefix='Progress:', suffix=f'{sent_files}/{total_files} files', length=50)
+
+                    except Exception as e:
+                        print(f"\n[!] Could not read file '{relative_path}': {e}. Skipping.")
+                        continue
+            
+            end_header = f"FOLDER_END::{folder_name}\n".encode('utf-8')
+            if sender_name == "You": self.connection.sendall(end_header)
+            else: self._broadcast(f"FOLDER_END::HOST::{folder_name}\n".encode('utf-8'), None)
+
+            print(f"[*] Finished sending folder '{folder_name}'.")
+
+        elif os.path.isfile(path_to_send):
+            try:
+                filesize = os.path.getsize(path_to_send)
+                filename = os.path.basename(path_to_send)
+                header = f"FILE_HEADER::{filename}::{filesize}\n".encode('utf-8')
+                
+                if sender_name == "You":
+                    self.connection.sendall(header)
+                else: # Host is sending
+                    host_header = f"FILE_HEADER::HOST::{filename}::{filesize}\n".encode('utf-8')
+                    self._broadcast(host_header, None)
+
+                sent_size = 0
+                self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
+                with open(path_to_send, 'rb') as f:
+                    while True:
+                        chunk = f.read(BUFFER_SIZE)
+                        if not chunk:
+                            break
+                        
+                        if sender_name == "You": self.connection.sendall(chunk)
+                        else: self._broadcast(chunk, None)
+
+                        sent_size += len(chunk)
+                        self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
+                
+                print(f"\n[*] Finished sending '{filename}'.")
+            except Exception as e:
+                print(f"\n[!] Could not read or send file: {e}")
+        else:
+            print(f"[!] Path not found: {path_to_send}")
 
     def _send_handler(self):
-        """Handles sending messages and files from user input to the host."""
+        """Handles sending messages and files from the client's user input."""
         print("--- Connected to Host ---")
         print("Type 'exit' to disconnect.")
         print("To send a file or folder, type 'send <path>'")
@@ -317,79 +422,7 @@ class P2PNode:
 
             if message.lower().startswith('send '):
                 path_to_send = message[5:].strip().strip("'\"")
-
-                if os.path.isdir(path_to_send):
-                    folder_name = os.path.basename(os.path.normpath(path_to_send))
-
-                    # --- Calculate total size and file count for progress bar ---
-                    print("[*] Calculating folder size...")
-                    total_files = 0
-                    total_size = 0
-                    for root, _, files in os.walk(path_to_send):
-                        for filename in files:
-                            try:
-                                total_files += 1
-                                total_size += os.path.getsize(os.path.join(root, filename))
-                            except OSError:
-                                continue # Skip files we can't access
-                    print(f"[*] Total files: {total_files}, Total size: {total_size / (1024*1024):.2f} MB")
-
-                    # --- Start sending ---
-                    print(f"[*] Starting to send folder '{folder_name}'...")
-                    self.connection.sendall(f"FOLDER_HEADER::{folder_name}\n".encode('utf-8'))
-
-                    sent_files = 0
-                    sent_size = 0
-                    self._print_progress_bar(0, total_size, prefix='Progress:', suffix='Complete', length=50)
-
-                    for root, _, files in os.walk(path_to_send):
-                        for filename in files:
-                            full_path = os.path.join(root, filename)
-                            relative_path = os.path.relpath(full_path, path_to_send)
-                            
-                            try:
-                                with open(full_path, 'rb') as f:
-                                    file_content = f.read()
-                                
-                                filesize = len(file_content)
-                                self.connection.sendall(f"FILE_HEADER::{relative_path}::{filesize}\n".encode('utf-8'))
-                                self.connection.sendall(file_content)
-                                
-                                sent_files += 1
-                                sent_size += filesize
-                                self._print_progress_bar(sent_size, total_size, prefix='Progress:', suffix=f'{sent_files}/{total_files} files', length=50)
-
-                            except Exception as e:
-                                print(f"\n[!] Could not read file '{relative_path}': {e}. Skipping.")
-                                continue
-                    
-                    self.connection.sendall(f"FOLDER_END::{folder_name}\n".encode('utf-8'))
-                    print(f"[*] Finished sending folder '{folder_name}'.")
-
-                elif os.path.isfile(path_to_send):
-                    try:
-                        filesize = os.path.getsize(path_to_send)
-                        filename = os.path.basename(path_to_send)
-                        header = f"FILE_HEADER::{filename}::{filesize}\n".encode('utf-8')
-                        
-                        self.connection.sendall(header)
-
-                        sent_size = 0
-                        self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
-                        with open(path_to_send, 'rb') as f:
-                            while True:
-                                chunk = f.read(BUFFER_SIZE)
-                                if not chunk:
-                                    break
-                                self.connection.sendall(chunk)
-                                sent_size += len(chunk)
-                                self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
-                        
-                        print(f"\n[*] Finished sending '{filename}'.")
-                    except Exception as e:
-                        print(f"\n[!] Could not read or send file: {e}")
-                else:
-                    print(f"[!] Path not found: {path_to_send}")
+                self._send_file_or_folder(path_to_send, sender_name="You")
             else:
                 self.connection.sendall(f"{message}\n".encode('utf-8'))
         
