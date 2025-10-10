@@ -53,64 +53,74 @@ class P2PNode:
             self.clients.remove(client_tuple)
             # Use carriage return to not disrupt the host's input prompt
             print(f"\r[*] {username} ({addr[0]}) has disconnected.\nHost> ", end="")
-            disconnect_msg = f"--- {username} has left the chat ---".encode('utf-8')
+            disconnect_msg = f"--- {username} has left the chat ---\n".encode('utf-8')
             self._broadcast(disconnect_msg, conn)
             conn.close()
 
     def _client_handler(self, conn, addr, username):
         """
         Each client gets a dedicated thread running this function.
-        It handles receiving messages, files, and broadcasting them.
+        It handles receiving messages, files, and broadcasting them using a robust buffer.
         """
-        # Announce the new user to the chat
-        welcome_msg = f"--- {username} has joined the chat ---".encode('utf-8')
+        welcome_msg = f"--- {username} has joined the chat ---\n".encode('utf-8')
         self._broadcast(welcome_msg, conn)
 
+        buffer = b""
         while True:
             try:
+                # This inner loop processes the buffer until it needs more data
+                while True:
+                    if b'\n' not in buffer:
+                        break # Incomplete message, need to receive more data
+
+                    message_line, _, buffer = buffer.partition(b'\n')
+                    
+                    try:
+                        decoded_line = message_line.decode('utf-8')
+                    except UnicodeDecodeError:
+                        print(f"\r[!] Received corrupted message from {username}. Ignoring.\nHost> ", end="")
+                        continue
+
+                    if decoded_line.startswith('FILE_HEADER::'):
+                        _, relative_path, filesize_str = decoded_line.split('::')
+                        filesize = int(filesize_str)
+
+                        if len(buffer) < filesize: # Check if the full file data is in the buffer
+                            buffer = message_line + b'\n' + buffer # Prepend header back
+                            break # Need more data for the file
+
+                        file_data = buffer[:filesize]
+                        buffer = buffer[filesize:]
+
+                        relay_header = f"FILE_HEADER::{username}::{relative_path}::{filesize}\n".encode('utf-8')
+                        print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
+                        self._broadcast(relay_header, conn)
+                        self._broadcast(file_data, conn)
+                        print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
+                        continue
+
+                    elif decoded_line.startswith('FOLDER_HEADER::') or decoded_line.startswith('FOLDER_END::'):
+                        msg_type, name = decoded_line.split('::')
+                        relay_msg = f"{msg_type}::{username}::{name}\n".encode('utf-8')
+                        
+                        if msg_type == 'FOLDER_HEADER':
+                            print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
+                        else:
+                            print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
+                        self._broadcast(relay_msg, conn)
+                        continue
+
+                    else: # It's a chat message
+                        message_to_broadcast = f"[{username}] says: {decoded_line}\n".encode('utf-8')
+                        print(f"\r[{username}] says: {decoded_line}\nHost> ", end="")
+                        self._broadcast(message_to_broadcast, conn)
+                        continue
+                
+                # If the inner loop broke, we need more data
                 data = conn.recv(BUFFER_SIZE)
                 if not data:
                     break # Connection closed by client
-                
-                # Check for file header first, as it has a data payload to relay
-                if data.startswith(b'FILE_HEADER::'):
-                    header_parts = data.decode('utf-8').split('::')
-                    _, relative_path, filesize_str = header_parts
-                    filesize = int(filesize_str)
-
-                    # Relay the header with the sender's username
-                    relay_header = f"FILE_HEADER::{username}::{relative_path}::{filesize}".encode('utf-8')
-                    print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
-                    self._broadcast(relay_header, conn)
-                    
-                    # Now, relay the file data
-                    bytes_to_relay = filesize
-                    while bytes_to_relay > 0:
-                        chunk = conn.recv(min(BUFFER_SIZE, bytes_to_relay))
-                        if not chunk:
-                            break
-                        self._broadcast(chunk, conn)
-                        bytes_to_relay -= len(chunk)
-                    print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
-
-                elif data.startswith(b'FOLDER_HEADER::') or data.startswith(b'FOLDER_END::'):
-                    # These are simple single-line messages to be relayed
-                    decoded_data = data.decode('utf-8').split('::')
-                    msg_type, name = decoded_data
-                    relay_msg = f"{msg_type}::{username}::{name}".encode('utf-8')
-                    
-                    if msg_type == 'FOLDER_HEADER':
-                        print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
-                    else:
-                        print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
-
-                    self._broadcast(relay_msg, conn)
-                
-                else: # It's a chat message
-                    message_to_broadcast = f"[{username}] says: ".encode('utf-8') + data
-                    # Use carriage return to cleanly print message above the host's input prompt
-                    print(f"\r[{username}] says: {data.decode('utf-8')}\nHost> ", end="")
-                    self._broadcast(message_to_broadcast, conn)
+                buffer += data
 
             except (ConnectionResetError, ConnectionAbortedError):
                 break # Client disconnected abruptly
@@ -172,7 +182,7 @@ class P2PNode:
                 break
             
             if message:
-                formatted_message = f"[HOST] says: {message}".encode('utf-8')
+                formatted_message = f"[HOST] says: {message}\n".encode('utf-8')
                 self._broadcast(formatted_message, None)
 
     def start_host(self):
@@ -195,58 +205,82 @@ class P2PNode:
     # --- CLIENT FUNCTIONALITY ---
 
     def _receive_handler(self):
-        """Handles receiving messages and files from the host."""
+        """Handles receiving messages and files from the host using a stateful buffer."""
+        buffer = b""
+        receiving_file_info = None
+
         while True:
             try:
-                data = self.connection.recv(BUFFER_SIZE)
-                if not data:
-                    print("\n[!] Connection to host lost.")
-                    break
+                # --- STATE 1: RECEIVING A FILE ---
+                if receiving_file_info:
+                    filesize, save_path = receiving_file_info
+                    if len(buffer) < filesize:
+                        # Need more data for the file, so we must receive.
+                        data = self.connection.recv(BUFFER_SIZE)
+                        if not data:
+                            print("\n[!] Connection to host lost during file transfer.")
+                            break
+                        buffer += data
+                        continue # Re-evaluate buffer
+
+                    # We have enough data for the file now.
+                    file_data = buffer[:filesize]
+                    buffer = buffer[filesize:]
+                    
+                    with open(save_path, 'wb') as f:
+                        f.write(file_data)
+                    
+                    print(f"\r[*] Successfully downloaded '{os.path.basename(save_path)}'.\nYou> ", end="")
+                    receiving_file_info = None # Go back to message mode
+                    # Continue to process any remaining data in the buffer
                 
-                # Check for folder/file headers first
-                if data.startswith(b'FOLDER_HEADER::'):
-                    header_parts = data.decode('utf-8').split('::')
-                    _, sender_username, folder_name = header_parts
+                # --- STATE 2: PROCESSING MESSAGES ---
+                if b'\n' not in buffer:
+                    # Incomplete message, get more data
+                    data = self.connection.recv(BUFFER_SIZE)
+                    if not data:
+                        print("\n[!] Connection to host lost.")
+                        break
+                    buffer += data
+                    continue # Re-evaluate buffer
+
+                # We have at least one full message ending with '\n'
+                message, _, buffer = buffer.partition(b'\n')
+                
+                try:
+                    decoded_message = message.decode('utf-8')
+                except UnicodeDecodeError:
+                    print(f"\r[!] Received corrupted message. Ignoring.\nYou> ", end="")
+                    continue
+                
+                if decoded_message.startswith('FOLDER_HEADER::'):
+                    _, sender_username, folder_name = decoded_message.split('::')
                     print(f"\r[*] Receiving folder '{folder_name}' from {sender_username}.\nYou> ", end="")
                     self.download_root = os.path.join(DOWNLOADS_DIR, os.path.basename(folder_name))
                     os.makedirs(self.download_root, exist_ok=True)
                 
-                elif data.startswith(b'FOLDER_END::'):
-                    header_parts = data.decode('utf-8').split('::')
-                    _, sender_username, folder_name = header_parts
+                elif decoded_message.startswith('FOLDER_END::'):
+                    _, sender_username, folder_name = decoded_message.split('::')
                     print(f"\r[*] Successfully downloaded folder '{folder_name}' from {sender_username}.\nYou> ", end="")
-                    self.download_root = None # Reset after folder transfer is complete
+                    self.download_root = None
 
-                elif data.startswith(b'FILE_HEADER::'):
-                    header_parts = data.decode('utf-8').split('::')
-                    _, sender_username, relative_path, filesize_str = header_parts
+                elif decoded_message.startswith('FILE_HEADER::'):
+                    _, sender_username, relative_path, filesize_str = decoded_message.split('::')
                     filesize = int(filesize_str)
 
                     print(f"\r[*] Receiving file '{relative_path}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
                     
-                    # Determine where to save the file
                     if self.download_root:
                         save_path = os.path.join(self.download_root, relative_path)
                     else:
                         os.makedirs(DOWNLOADS_DIR, exist_ok=True)
                         save_path = os.path.join(DOWNLOADS_DIR, os.path.basename(relative_path))
                     
-                    # Ensure the subdirectory for the file exists
                     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-                    with open(save_path, 'wb') as f:
-                        bytes_received = 0
-                        while bytes_received < filesize:
-                            chunk = self.connection.recv(min(BUFFER_SIZE, filesize - bytes_received))
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            bytes_received += len(chunk)
-                    
-                    print(f"\r[*] Successfully downloaded '{relative_path}'.\nYou> ", end="")
-
+                    receiving_file_info = (filesize, save_path) # Enter file receiving mode
+                
                 else: # It's a chat message
-                    print(f"\r{data.decode('utf-8')}\nYou> ", end="")
+                    print(f"\r{decoded_message}\nYou> ", end="")
 
             except (ConnectionResetError, ConnectionAbortedError):
                 print("\n[!] Connection to host was closed.")
@@ -272,47 +306,49 @@ class P2PNode:
                 path_to_send = message[5:].strip().strip("'\"")
 
                 if os.path.isdir(path_to_send):
-                    # --- FOLDER SENDING LOGIC ---
                     folder_name = os.path.basename(os.path.normpath(path_to_send))
                     print(f"[*] Starting to send folder '{folder_name}'...")
-                    self.connection.sendall(f"FOLDER_HEADER::{folder_name}".encode('utf-8'))
-                    time.sleep(0.1)
+                    self.connection.sendall(f"FOLDER_HEADER::{folder_name}\n".encode('utf-8'))
 
                     for root, _, files in os.walk(path_to_send):
                         for filename in files:
                             full_path = os.path.join(root, filename)
                             relative_path = os.path.relpath(full_path, path_to_send)
-                            filesize = os.path.getsize(full_path)
                             
-                            print(f"  Sending: {relative_path}")
-                            self.connection.sendall(f"FILE_HEADER::{relative_path}::{filesize}".encode('utf-8'))
-                            time.sleep(0.1)
-
-                            with open(full_path, 'rb') as f:
-                                while (chunk := f.read(BUFFER_SIZE)):
-                                    self.connection.sendall(chunk)
-                            time.sleep(0.1)
-
-                    self.connection.sendall(f"FOLDER_END::{folder_name}".encode('utf-8'))
+                            try:
+                                with open(full_path, 'rb') as f:
+                                    file_content = f.read()
+                                
+                                filesize = len(file_content)
+                                print(f"  Sending: {relative_path}")
+                                self.connection.sendall(f"FILE_HEADER::{relative_path}::{filesize}\n".encode('utf-8'))
+                                self.connection.sendall(file_content)
+                            
+                            except Exception as e:
+                                print(f"  [!] Could not read file '{relative_path}': {e}. Skipping.")
+                                continue
+                    
+                    self.connection.sendall(f"FOLDER_END::{folder_name}\n".encode('utf-8'))
                     print(f"[*] Finished sending folder '{folder_name}'.")
 
                 elif os.path.isfile(path_to_send):
-                    # --- SINGLE FILE SENDING LOGIC ---
-                    filesize = os.path.getsize(path_to_send)
-                    filename = os.path.basename(path_to_send)
-                    header = f"FILE_HEADER::{filename}::{filesize}".encode('utf-8')
-                    
-                    self.connection.sendall(header)
-                    time.sleep(0.1)
-
-                    with open(path_to_send, 'rb') as f:
-                        while (chunk := f.read(BUFFER_SIZE)):
-                            self.connection.sendall(chunk)
-                    print(f"[*] Finished sending '{filename}'.")
+                    try:
+                        with open(path_to_send, 'rb') as f:
+                            file_content = f.read()
+                        
+                        filesize = len(file_content)
+                        filename = os.path.basename(path_to_send)
+                        header = f"FILE_HEADER::{filename}::{filesize}\n".encode('utf-8')
+                        
+                        self.connection.sendall(header)
+                        self.connection.sendall(file_content)
+                        print(f"[*] Finished sending '{filename}'.")
+                    except Exception as e:
+                        print(f"[!] Could not read or send file: {e}")
                 else:
                     print(f"[!] Path not found: {path_to_send}")
             else:
-                self.connection.sendall(message.encode('utf-8'))
+                self.connection.sendall(f"{message}\n".encode('utf-8'))
         
         self.connection.close()
 
@@ -323,10 +359,8 @@ class P2PNode:
             self.socket.connect((host_ip, host_port))
             self.connection = self.socket
 
-            # Send username immediately after connecting
             self.connection.sendall(username.encode('utf-8'))
 
-            # Wait for the host's approval
             response = self.connection.recv(BUFFER_SIZE)
             if response == b'CONNECT_ACCEPT':
                 print("[*] Connection accepted by host!")
@@ -357,7 +391,6 @@ if __name__ == "__main__":
     if args.host:
         node.start_host()
     elif args.connect:
-        # Prompt for username if running as a client
         client_username = input("Enter your username: ")
         if not client_username:
             print("Username cannot be empty.")
