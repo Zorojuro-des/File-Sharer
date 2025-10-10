@@ -7,11 +7,13 @@ import argparse
 import sys
 import os
 import queue
+import time
 
 # --- Constants ---
 HOST = '0.0.0.0'  # Listen on all available interfaces
 PORT = 65432      # The port for our application
-BUFFER_SIZE = 1024 # Size of the data buffer
+BUFFER_SIZE = 4096 # Use a larger buffer for file transfers
+DOWNLOADS_DIR = "downloads" # Directory to save received files
 
 class P2PNode:
     """Represents a node in the P2P network, can act as a Host or a Client."""
@@ -56,7 +58,7 @@ class P2PNode:
     def _client_handler(self, conn, addr, username):
         """
         Each client gets a dedicated thread running this function.
-        It handles receiving messages and broadcasting them.
+        It handles receiving messages, files, and broadcasting them.
         """
         # Announce the new user to the chat
         welcome_msg = f"--- {username} has joined the chat ---".encode('utf-8')
@@ -68,10 +70,32 @@ class P2PNode:
                 if not data:
                     break # Connection closed by client
                 
-                message_to_broadcast = f"[{username}] says: ".encode('utf-8') + data
-                # Use carriage return to cleanly print message above the host's input prompt
-                print(f"\r[{username}] says: {data.decode('utf-8')}\nHost> ", end="")
-                self._broadcast(message_to_broadcast, conn)
+                # Check if this is a file header
+                if data.startswith(b'FILE_HEADER::'):
+                    header_parts = data.decode('utf-8').split('::')
+                    _, filename, filesize_str = header_parts
+                    filesize = int(filesize_str)
+
+                    # Relay the header with the sender's username
+                    relay_header = f"FILE_HEADER::{username}::{filename}::{filesize}".encode('utf-8')
+                    print(f"\r[*] Relaying file '{filename}' from {username}.\nHost> ", end="")
+                    self._broadcast(relay_header, conn)
+                    
+                    # Now, relay the file data
+                    bytes_to_relay = filesize
+                    while bytes_to_relay > 0:
+                        chunk = conn.recv(min(BUFFER_SIZE, bytes_to_relay))
+                        if not chunk:
+                            break
+                        self._broadcast(chunk, conn)
+                        bytes_to_relay -= len(chunk)
+                    print(f"\r[*] Finished relaying '{filename}' from {username}.\nHost> ", end="")
+
+                else: # It's a chat message
+                    message_to_broadcast = f"[{username}] says: ".encode('utf-8') + data
+                    # Use carriage return to cleanly print message above the host's input prompt
+                    print(f"\r[{username}] says: {data.decode('utf-8')}\nHost> ", end="")
+                    self._broadcast(message_to_broadcast, conn)
 
             except (ConnectionResetError, ConnectionAbortedError):
                 break # Client disconnected abruptly
@@ -156,33 +180,78 @@ class P2PNode:
     # --- CLIENT FUNCTIONALITY ---
 
     def _receive_handler(self):
-        """Handles receiving messages from the host."""
+        """Handles receiving messages and files from the host."""
         while True:
             try:
                 data = self.connection.recv(BUFFER_SIZE)
                 if not data:
                     print("\n[!] Connection to host lost.")
                     break
-                print(f"\r{data.decode('utf-8')}\nYou> ", end="")
+                
+                # Check for file header
+                if data.startswith(b'FILE_HEADER::'):
+                    header_parts = data.decode('utf-8').split('::')
+                    _, sender_username, filename, filesize_str = header_parts
+                    filesize = int(filesize_str)
+
+                    print(f"\r[*] Receiving file '{filename}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
+                    
+                    # Create downloads directory if it doesn't exist
+                    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+                    filepath = os.path.join(DOWNLOADS_DIR, os.path.basename(filename))
+
+                    with open(filepath, 'wb') as f:
+                        bytes_received = 0
+                        while bytes_received < filesize:
+                            chunk = self.connection.recv(min(BUFFER_SIZE, filesize - bytes_received))
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            bytes_received += len(chunk)
+                    
+                    print(f"\r[*] Successfully downloaded '{filename}'.\nYou> ", end="")
+
+                else: # It's a chat message
+                    print(f"\r{data.decode('utf-8')}\nYou> ", end="")
+
             except (ConnectionResetError, ConnectionAbortedError):
                 print("\n[!] Connection to host was closed.")
                 break
             except Exception as e:
-                print(f"\n[!] An error occurred: {e}")
+                print(f"\n[!] An error occurred during receive: {e}")
                 break
         
         self.connection.close()
         os._exit(0)
 
     def _send_handler(self):
-        """Handles sending messages from user input to the host."""
+        """Handles sending messages and files from user input to the host."""
         print("--- Connected to Host ---")
         print("Type 'exit' to disconnect.")
+        print("To send a file, type 'send <filepath>'")
         while True:
             message = input("You> ")
             if message.lower() == 'exit':
                 break
-            self.connection.sendall(message.encode('utf-8'))
+
+            if message.lower().startswith('send '):
+                filepath = message[5:].strip()
+                if os.path.exists(filepath):
+                    filesize = os.path.getsize(filepath)
+                    filename = os.path.basename(filepath)
+                    header = f"FILE_HEADER::{filename}::{filesize}".encode('utf-8')
+                    
+                    self.connection.sendall(header)
+                    time.sleep(0.1) # Give a moment for the header to be processed separately
+
+                    with open(filepath, 'rb') as f:
+                        while (chunk := f.read(BUFFER_SIZE)):
+                            self.connection.sendall(chunk)
+                    print(f"[*] Finished sending '{filename}'.")
+                else:
+                    print(f"[!] File not found: {filepath}")
+            else:
+                self.connection.sendall(message.encode('utf-8'))
         
         self.connection.close()
 
