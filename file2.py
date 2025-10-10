@@ -93,20 +93,21 @@ class P2PNode:
                         buffer = buffer[filesize:]
 
                         relay_header = f"FILE_HEADER::{username}::{relative_path}::{filesize}\n".encode('utf-8')
-                        print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
+                        # print(f"\r[*] Relaying file '{relative_path}' from {username}.\nHost> ", end="")
                         self._broadcast(relay_header, conn)
                         self._broadcast(file_data, conn)
-                        print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
+                        # print(f"\r[*] Finished relaying '{relative_path}' from {username}.\nHost> ", end="")
                         continue
 
                     elif decoded_line.startswith('FOLDER_HEADER::') or decoded_line.startswith('FOLDER_END::'):
                         msg_type, name = decoded_line.split('::')
                         relay_msg = f"{msg_type}::{username}::{name}\n".encode('utf-8')
                         
-                        if msg_type == 'FOLDER_HEADER':
-                            print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
-                        else:
-                            print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
+                        # if msg_type == 'FOLDER_HEADER':
+                        #     print(f"\r[*] Relaying folder '{name}' from {username}.\nHost> ", end="")
+
+                        # else:
+                        #     print(f"\r[*] Finished relaying folder '{name}' from {username}.\nHost> ", end="")
                         self._broadcast(relay_msg, conn)
                         continue
 
@@ -203,6 +204,19 @@ class P2PNode:
         self.socket.close()
 
     # --- CLIENT FUNCTIONALITY ---
+
+    def _print_progress_bar(self, iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█'):
+        """
+        Call in a loop to create terminal progress bar.
+        """
+        percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total))) if total > 0 else "0.0"
+        filled_length = int(length * iteration // total) if total > 0 else 0
+        bar = fill * filled_length + '-' * (length - filled_length)
+        sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+        sys.stdout.flush()
+        if iteration == total:
+            sys.stdout.write('\n')
+            sys.stdout.flush()
 
     def _receive_handler(self):
         """Handles receiving messages and files from the host using a stateful buffer."""
@@ -307,8 +321,27 @@ class P2PNode:
 
                 if os.path.isdir(path_to_send):
                     folder_name = os.path.basename(os.path.normpath(path_to_send))
+
+                    # --- Calculate total size and file count for progress bar ---
+                    print("[*] Calculating folder size...")
+                    total_files = 0
+                    total_size = 0
+                    for root, _, files in os.walk(path_to_send):
+                        for filename in files:
+                            try:
+                                total_files += 1
+                                total_size += os.path.getsize(os.path.join(root, filename))
+                            except OSError:
+                                continue # Skip files we can't access
+                    print(f"[*] Total files: {total_files}, Total size: {total_size / (1024*1024):.2f} MB")
+
+                    # --- Start sending ---
                     print(f"[*] Starting to send folder '{folder_name}'...")
                     self.connection.sendall(f"FOLDER_HEADER::{folder_name}\n".encode('utf-8'))
+
+                    sent_files = 0
+                    sent_size = 0
+                    self._print_progress_bar(0, total_size, prefix='Progress:', suffix='Complete', length=50)
 
                     for root, _, files in os.walk(path_to_send):
                         for filename in files:
@@ -320,12 +353,15 @@ class P2PNode:
                                     file_content = f.read()
                                 
                                 filesize = len(file_content)
-                                print(f"  Sending: {relative_path}")
                                 self.connection.sendall(f"FILE_HEADER::{relative_path}::{filesize}\n".encode('utf-8'))
                                 self.connection.sendall(file_content)
-                            
+                                
+                                sent_files += 1
+                                sent_size += filesize
+                                self._print_progress_bar(sent_size, total_size, prefix='Progress:', suffix=f'{sent_files}/{total_files} files', length=50)
+
                             except Exception as e:
-                                print(f"  [!] Could not read file '{relative_path}': {e}. Skipping.")
+                                print(f"\n[!] Could not read file '{relative_path}': {e}. Skipping.")
                                 continue
                     
                     self.connection.sendall(f"FOLDER_END::{folder_name}\n".encode('utf-8'))
@@ -333,18 +369,26 @@ class P2PNode:
 
                 elif os.path.isfile(path_to_send):
                     try:
-                        with open(path_to_send, 'rb') as f:
-                            file_content = f.read()
-                        
-                        filesize = len(file_content)
+                        filesize = os.path.getsize(path_to_send)
                         filename = os.path.basename(path_to_send)
                         header = f"FILE_HEADER::{filename}::{filesize}\n".encode('utf-8')
                         
                         self.connection.sendall(header)
-                        self.connection.sendall(file_content)
-                        print(f"[*] Finished sending '{filename}'.")
+
+                        sent_size = 0
+                        self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
+                        with open(path_to_send, 'rb') as f:
+                            while True:
+                                chunk = f.read(BUFFER_SIZE)
+                                if not chunk:
+                                    break
+                                self.connection.sendall(chunk)
+                                sent_size += len(chunk)
+                                self._print_progress_bar(sent_size, filesize, prefix='Progress:', suffix='Complete', length=50)
+                        
+                        print(f"\n[*] Finished sending '{filename}'.")
                     except Exception as e:
-                        print(f"[!] Could not read or send file: {e}")
+                        print(f"\n[!] Could not read or send file: {e}")
                 else:
                     print(f"[!] Path not found: {path_to_send}")
             else:
