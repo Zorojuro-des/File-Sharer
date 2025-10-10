@@ -1,11 +1,11 @@
-# Cool P2P Chat & File Sharer 🚀 {#cool-p2p-chat-file-sharer}
+# Cool P2P Chat & File Sharer 🚀
 
 Yo! 👋 So this is a fun little command-line app for P2P chatting and
 file sharing. You can spin up a private chat room with your friends and
 just send messages, files, or even whole folders back and forth. All you
 need is Python, no extra junk.
 
-## How it Works (The Simple Version) 🤔 {#how-it-works-the-simple-version}
+## How it Works (The Simple Version) 🤔
 
 It\'s pretty simple, tbh. One person is the \"Host\" and everyone else
 just connects to them.
@@ -23,7 +23,7 @@ The best part? You only have to get permission once. After the host lets
 you in, you can share stuff freely without them having to approve every
 single file. No annoying popups, lol. 👍
 
-## What it Can Do ✨ {#what-it-can-do}
+## What it Can Do ✨
 
 - **Group Chat:** Chat with all your buddies at once.
 
@@ -44,13 +44,13 @@ single file. No annoying popups, lol. 👍
 - **Works Anywhere:** As long as you have Python, it\'ll run. Windows,
   > Mac, Linux, whatever. 💻
 
-## What You Need ✅ {#what-you-need}
+## What You Need ✅
 
 - Python 3.6 (or newer)
 
 - That\'s literally it. No need to install anything else.
 
-## How to Get it Goin\' 👉 {#how-to-get-it-goin}
+## How to Get it Goin\' 👉
 
 1.  Get the script:  
     > First, just save the code as p2p_host_client_app.py.
@@ -77,7 +77,7 @@ single file. No annoying popups, lol. 👍
 5.  Go Wild!  
     > And you\'re in! Go nuts. Chat, send files, have fun. 🎉
 
-## Commands ⌨️ {#commands}
+## Commands ⌨️
 
 - **To Chat:** Just type stuff and press Enter. Duh. 💬
 
