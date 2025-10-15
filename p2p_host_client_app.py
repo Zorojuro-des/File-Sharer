@@ -284,7 +284,7 @@ class P2PNode:
                     _, sender_username, relative_path, filesize_str = decoded_message.split('::')
                     filesize = int(filesize_str)
 
-                    print(f"\r[*] Receiving file '{relative_path}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
+                    # print(f"\r[*] Receiving file '{relative_path}' from {sender_username} ({filesize} bytes).\nYou> ", end="")
                     
                     if self.download_root:
                         save_path = os.path.join(self.download_root, relative_path)
