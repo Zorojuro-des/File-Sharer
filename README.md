@@ -1,96 +1,125 @@
 # Cool P2P Chat & File Sharer 🚀
 
-Yo! 👋 So this is a fun little command-line app for P2P chatting and
-file sharing. You can spin up a private chat room with your friends and
-just send messages, files, or even whole folders back and forth. All you
-need is Python, no extra junk.
+Yo! 👋 This is a fun little app for **P2P chatting and file sharing**.  
+You can spin up a private chat room with your friends and just send messages, files, or even whole folders back and forth — all peer-to-peer, no servers needed.  
 
-## How it Works (The Simple Version) 🤔
+All you need is Python — no extra junk. 😎
 
-It\'s pretty simple, tbh. One person is the \"Host\" and everyone else
-just connects to them.
+---
 
-- **👑 The Host:** The Host is basically the boss of the chat room. They
-  > start it up, and everyone connects to their computer. The host is
-  > like the bouncer---they gotta give the thumbs up for anyone to join.
-  > They can chat and stuff, too.
+## 💡 Now You Can Use It in 3 Ways!
 
-- **🧍 The Client:** Clients are everyone else who joins the party. You
-  > just need the host\'s IP address to connect and you\'re in! You can
-  > chat, send files, whatever.
+You get to choose how you want to roll:
 
-The best part? You only have to get permission once. After the host lets
-you in, you can share stuff freely without them having to approve every
-single file. No annoying popups, lol. 👍
+1. **🖥️ CLI Mode (Classic)**  
+   Run it straight from the terminal using:  
+   ```bash
+   python p2p_host_client_app.py --host
+   ```  
+   or connect to someone using:  
+   ```bash
+   python p2p_host_client_app.py --connect HOST_IP_ADDRESS
+   ```
 
-## What it Can Do ✨
+2. **🪟 GUI Mode (Easy & Split Interface)**  
+   If you prefer a graphical interface, you can use:  
+   ```bash
+   python p2p_gui_split.py
+   ```  
+   This gives you an intuitive split-window UI for chatting and file sharing — perfect if you’re not into terminals.
 
-- **Group Chat:** Chat with all your buddies at once.
+3. **⚡ Executable Mode (Windows 11 Only for Now)**  
+   You can just download and run the ready-to-use executable:  
+   ```
+   dist/P2PSharer.exe
+   ```  
+   No Python setup needed! Just open it and start sharing. (Currently only available for **Windows 11**.)
 
-- **Usernames:** Pick a nickname so people actually know who\'s talking.
+---
 
-- **Host Approval:** The host decides who gets in. No randoms.
+## How It Works (The Simple Version) 🤔
 
-- **Real-Time Chat:** The chat is live, so no laggy messages.
+It’s pretty simple, tbh. One person acts as the **Host**, and everyone else connects to them.
 
-- **Send Files:** Send pretty much any single file you want.
+- **👑 The Host:**  
+  Starts the chat room and approves who joins. The host can also chat and share files.
 
-- **Send Folders:** Or just yeet a whole folder over. The app keeps all
-  > the files inside organized for the person receiving it. Pog.
+- **🧍 The Client:**  
+  Joins the host using their IP address. Once approved, clients can freely chat and exchange files.
 
-- **Progress Bar:** You even get a cool little progress bar when you\'re
-  > sending big stuff so you know it\'s not stuck.
+After approval, you can share files or folders without any further prompts. No annoying confirmations every time. 👍
 
-- **Works Anywhere:** As long as you have Python, it\'ll run. Windows,
-  > Mac, Linux, whatever. 💻
+---
+
+## What It Can Do ✨
+
+- **Group Chat:** Chat live with everyone connected.  
+- **Usernames:** Choose a nickname so people know who’s talking.  
+- **Host Approval:** Host decides who gets in.  
+- **Real-Time Messaging:** Instant communication.  
+- **Send Files:** Share single files easily.  
+- **Send Folders:** Transfer entire folders with structure preserved.  
+- **Progress Bar:** See how fast your files are flying!  
+- **Cross-Platform:** Works on Windows, Mac, and Linux (Python version).  
+
+---
 
 ## What You Need ✅
 
-- Python 3.6 (or newer)
+- Python 3.6 or newer  
+- Or use the pre-built `P2PSharer.exe` on Windows 11 — no Python required.
 
-- That\'s literally it. No need to install anything else.
+---
 
-## How to Get it Goin\' 👉
+## How to Get it Goin’ 👉
 
-1.  Get the script:  
-    > First, just save the code as p2p_host_client_app.py.
+### 🏠 Be the Host:
+```bash
+python p2p_host_client_app.py --host
+```
+You’ll see your IP address — share it with your friends so they can join.
 
-2.  Be the Host:  
-    > Someone\'s gotta be the host. If that\'s gonna be you, open your
-    > terminal, go to where you saved the file, and run this:  
-    > python p2p_host_client_app.py \--host  
-    >   
-    > It\'ll show you your IP address. You\'ll need to give that to your
-    > friends.
+### 👥 Join as a Client:
+```bash
+python p2p_host_client_app.py --connect HOST_IP_ADDRESS
+```
+Then choose your username when prompted.
 
-3.  Join as a Client:  
-    > For everyone else, you\'re a client. Run this command, but make
-    > sure to swap in the host\'s real IP address.  
-    > python p2p_host_client_app.py \--connect HOST_IP_ADDRESS  
-    >   
-    > Then it\'ll ask you to pick a username.
+### ✅ Host Approval:
+The host will be asked whether to allow each new connection. Type `y` to let them in.
 
-4.  Host, Let \'Em In!  
-    > Heads up, host! Your terminal will ask if you wanna let the person
-    > in. Just type y and hit Enter.
+### 🎉 Chat Away:
+Once approved, you can send messages, files, or folders freely.
 
-5.  Go Wild!  
-    > And you\'re in! Go nuts. Chat, send files, have fun. 🎉
+---
 
 ## Commands ⌨️
 
-- **To Chat:** Just type stuff and press Enter. Duh. 💬
+- **To Chat:**  
+  Just type and hit Enter.
 
 - **To Send a File:**  
-  > You\> send \"path/to/your/file.txt\"
+  ```
+  You> send "path/to/your/file.txt"
+  ```
 
 - **To Send a Folder:**  
-  > You\> send \"path/to/your/folder\"
+  ```
+  You> send "path/to/your/folder"
+  ```
 
-- **To Leave:**  
-  > You\> exit  
-  >   
-  > Tired of us? Just type exit to bounce. 🚪
+- **To Leave the Chat:**  
+  ```
+  You> exit
+  ```
 
-**Btw:** any files or folders you get will be chucked into a downloads
-folder right where the script is. Easy peasy. 😉
+All received files/folders are saved inside a `downloads` folder created next to the script or executable. 📂
+
+---
+
+## TL;DR 🧠
+- Use the **CLI** if you love terminals.  
+- Use the **GUI** if you like visuals.  
+- Use the **.exe** if you just wanna double-click and go (Windows 11).  
+
+Either way, enjoy private, fast, and secure P2P chatting and file sharing. 🚀  
